@@ -1,0 +1,104 @@
+spring:
+  application:
+    name: git-ai-dashboard
+  datasource:
+    url: jdbc:h2:file:./data/git-ai-dashboard;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.gitai.dashboard: ${GIT_AI_LOG_LEVEL:INFO}
+    com.gitai.dashboard.git.GitCommandService: ${GIT_AI_GIT_LOG_LEVEL:INFO}
+    com.gitai.dashboard.logging.RequestLoggingFilter: ${GIT_AI_HTTP_LOG_LEVEL:INFO}
+  file:
+    name: ${LOG_PATH:./logs}/git-ai-dashboard.log
+  logback:
+    rollingpolicy:
+      max-file-size: ${LOG_MAX_FILE_SIZE:100MB}
+      max-history: ${LOG_MAX_HISTORY:30}
+      total-size-cap: ${LOG_TOTAL_SIZE_CAP:2GB}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] [%thread] %logger{50} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] [%thread] %logger{50} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+git-ai:
+  auth:
+    # The placeholder validates a non-empty password against an enabled local account.
+    # Replace ExternalAuthenticationClient before production rollout; passwords are never persisted.
+    provider: ${GIT_AI_AUTH_PROVIDER:placeholder}
+    placeholder-enabled: ${GIT_AI_AUTH_PLACEHOLDER_ENABLED:true}
+    session-ttl: ${GIT_AI_AUTH_SESSION_TTL:PT8H}
+  mirror-root: ${GIT_AI_MIRROR_ROOT:./data/mirrors}
+  bin-directory: ${GIT_AI_BIN_DIR:${user.home}/.git-ai/bin}
+  command-timeout: ${GIT_AI_COMMAND_TIMEOUT:PT2M}
+  clone-timeout: ${GIT_AI_CLONE_TIMEOUT:PT15M}
+  max-commits-per-sync: ${GIT_AI_MAX_COMMITS_PER_SYNC:500}
+  max-command-output-bytes: ${GIT_AI_MAX_COMMAND_OUTPUT_BYTES:67108864}
+  sync:
+    # Set false for a read-only/statistics-only deployment; manual sync APIs remain available to authorized users.
+    scheduler-enabled: ${GIT_AI_SYNC_SCHEDULER_ENABLED:true}
+    # Default to one Git worker. Increase only after measuring CPU, disk, network and MySQL capacity.
+    worker-count: ${GIT_AI_SYNC_WORKER_COUNT:1}
+    queue-capacity: ${GIT_AI_SYNC_QUEUE_CAPACITY:10}
+    # The persisted UI setting decides whether a round runs; this controls only how often it is checked.
+    schedule-check-delay: ${GIT_AI_SYNC_SCHEDULE_CHECK_DELAY:PT1M}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: mysql
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/git_ai_dashboard?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&useSSL=false&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USER:git_ai_dashboard}
+    password: ${MYSQL_PASSWORD:change-me}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    locations: classpath:db/migration-mysql
+  h2:
+    console:
+      enabled: false
+
+---
+spring:
+  config:
+    activate:
+      on-profile: h2-import
+  main:
+    web-application-type: none
+  task:
+    scheduling:
+      enabled: false
+
+git-ai:
+  h2-import:
+    # This profile is a one-time, explicit database copy. It never runs during a normal startup.
+    enabled: ${GIT_AI_H2_IMPORT_ENABLED:false}
+    confirm: ${GIT_AI_H2_IMPORT_CONFIRM:}
+    source-url: ${GIT_AI_H2_IMPORT_SOURCE_URL:}
+    source-username: ${GIT_AI_H2_IMPORT_SOURCE_USERNAME:sa}
+    source-password: ${GIT_AI_H2_IMPORT_SOURCE_PASSWORD:}
+    batch-size: ${GIT_AI_H2_IMPORT_BATCH_SIZE:1000}

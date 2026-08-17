@@ -1,0 +1,2 @@
+CREATE INDEX idx_commit_stats_date_author ON commit_attribution_stats(commit_date, commit_author);
+CREATE INDEX idx_commit_stats_author ON commit_attribution_stats(commit_author);

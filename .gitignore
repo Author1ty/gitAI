@@ -1,0 +1,31 @@
+﻿# Java / Maven
+backend/target/
+backend/data/
+backend/application.log
+backend/application-error.log
+
+# React / Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Generated local test / release artifacts
+release-packages/
+backend-release-build-*/
+test-repos/
+test-runs/
+backend/logs/
+*.mv.db
+*.trace.db
+*.lock.db
+*.zip
+frontend/tmp-*.txt
+backend/preview-*.log
+.tmp-*
