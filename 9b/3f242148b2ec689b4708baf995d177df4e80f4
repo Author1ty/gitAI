@@ -1,0 +1,68 @@
+backend/src/main/resources/db/migration/V13__bounded_sync_window.sql
+  s_cc673be9de5d84::t_e1ad490860c285 1
+  s_cc673be9de5d84::t_f920799795f99e 2-3
+  s_cc673be9de5d84::t_002d85eda1d176 4-6
+backend/src/main/java/com/gitai/dashboard/migration/H2ToMySqlDataImporter.java
+  s_cc673be9de5d84::t_f920799795f99e 33
+backend/src/main/java/com/gitai/dashboard/sync/SyncScheduleService.java
+  s_cc673be9de5d84::t_9f6f5f1f59574f 47,49,76,79,82,97
+backend/src/test/java/com/gitai/dashboard/git/GitAiSyncServiceRemoteRepositoryTests.java
+  s_cc673be9de5d84::t_f2fd98e7f16e59 113-115
+  s_cc673be9de5d84::t_0653918fc7b0b0 124
+  s_cc673be9de5d84::t_eedb0028fbcc4e 14-17,105-112,116-123,125-142,175-182,192-195,203-205
+backend/src/test/java/com/gitai/dashboard/migration/H2ToMySqlDataImporterTests.java
+  s_cc673be9de5d84::t_6ab288a0b418de 75,96
+frontend/src/index.css
+  s_cc673be9de5d84::t_e1ad490860c285 1
+backend/src/main/resources/db/migration/V11__repair_legacy_sync_job_progress.sql
+  s_cc673be9de5d84::t_e1ad490860c285 1
+backend/src/test/java/com/gitai/dashboard/api/AuthAndAuthorizationTests.java
+  s_cc673be9de5d84::t_f20989955b7ae8 187-215,217,221-222,224,246,284
+  s_cc673be9de5d84::t_3de50a129ee9a0 216,218-220,223,225-245,247,282-283,285
+backend/src/main/java/com/gitai/dashboard/api/CatalogController.java
+  s_cc673be9de5d84::t_0bb7300feeb542 121
+  s_cc673be9de5d84::t_ac860e7d1171e6 79
+  s_cc673be9de5d84::t_f920799795f99e 23,75-76,78
+  s_cc673be9de5d84::t_0c481531b0e1f7 89-96,119-120,127
+  s_cc673be9de5d84::t_6d427d133888ea 131-191
+backend/src/main/java/com/gitai/dashboard/sync/SyncJobService.java
+  s_cc673be9de5d84::t_9f6f5f1f59574f 173,175-176,178,193,195,197,215-216,259,261-262,264,312,314-315,317-318,324,326-327
+backend/src/main/java/com/gitai/dashboard/git/GitAiSyncService.java
+  s_cc673be9de5d84::t_46fbee0f9954bb 14,16-17,71-74,76,78,133-134,138-140,218-219,223,225,229,231,233-246,253,400,402-405,407-412,446,449
+  s_cc673be9de5d84::t_ac860e7d1171e6 401
+  s_cc673be9de5d84::t_9f6f5f1f59574f 384,387
+  s_cc673be9de5d84::t_f920799795f99e 89-90,113
+  s_cc673be9de5d84::t_545d0606371c71 406
+backend/src/main/resources/db/migration/V6__async_sync_jobs.sql
+  s_cc673be9de5d84::t_e1ad490860c285 1
+frontend/src/App.tsx
+  s_cc673be9de5d84::t_e1ad490860c285 1
+  s_cc673be9de5d84::t_779a198a11e4ec 5-6,1050
+  s_cc673be9de5d84::t_0bb7300feeb542 327,353
+  s_cc673be9de5d84::t_df2833700b6bff 7-8
+  s_cc673be9de5d84::t_0c481531b0e1f7 157-165,263-264,267,275-284,291,298-305,307-311,314,324-326,328,365,407
+  s_cc673be9de5d84::t_20f37fee772f17 351
+  s_cc673be9de5d84::t_e7f0cd11026cce 332-350,352,354-364,366,369-370,372-396,400,413,974-995,1000-1004,1020
+frontend/src/main.tsx
+  s_cc673be9de5d84::t_e1ad490860c285 1
+backend/src/main/resources/db/migration-mysql/V13__bounded_sync_window.sql
+  s_cc673be9de5d84::t_e1ad490860c285 1
+  s_cc673be9de5d84::t_f920799795f99e 2-3
+  s_cc673be9de5d84::t_002d85eda1d176 4-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9b3f242148b2ec689b4708baf995d177df4e80f4",
+  "prompts": {},
+  "sessions": {
+    "s_cc673be9de5d84": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00411-a56d-7f20-83d0-257c1c1c48ec",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "git-ai-dashboard <git-ai-dashboard@localhost>"
+    }
+  }
+}
