@@ -8,6 +8,9 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.sql.Timestamp;
+import java.time.Instant;
+
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -193,6 +196,24 @@ class AuthAndAuthorizationTests {
         org.junit.jupiter.api.Assertions.assertEquals(1, count("repositories", 91));
     }
 
+    @Test
+    void tokenExpiryUsesServerEpochTimeInsteadOfDatabaseCurrentTimestamp() throws Exception {
+        String viewer = token("viewer");
+        Long sessionId = jdbc.queryForObject("select max(id) from auth_sessions", Long.class);
+        long serverNowEpochMs = System.currentTimeMillis();
+
+        // A database timestamp in the past must not invalidate a session whose server-issued epoch is still valid.
+        jdbc.update("update auth_sessions set expires_at = ?, expires_at_epoch_ms = ? where id = ?",
+                Timestamp.from(Instant.now().minusSeconds(3600)), serverNowEpochMs + 60_000, sessionId);
+        mockMvc.perform(get("/api/dashboard").header("Authorization", viewer))
+                .andExpect(status().isOk());
+
+        // Conversely, a future database timestamp cannot keep a server-expired token alive.
+        jdbc.update("update auth_sessions set expires_at = ?, expires_at_epoch_ms = ? where id = ?",
+                Timestamp.from(Instant.now().plusSeconds(3600)), serverNowEpochMs - 1, sessionId);
+        mockMvc.perform(get("/api/dashboard").header("Authorization", viewer))
+                .andExpect(status().isForbidden());
+    }
     private int count(String table, long repositoryId) {
         return jdbc.queryForObject("select count(*) from " + table + " where " + (table.equals("repositories") ? "id" : "repository_id") + " = ?", Integer.class, repositoryId);
     }

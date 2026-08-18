@@ -14,7 +14,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.sql.Timestamp;
-import java.time.LocalDateTime;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
@@ -26,12 +27,15 @@ public class AuthService {
     private final JdbcTemplate jdbc;
     private final ExternalAuthenticationClient externalAuthenticationClient;
     private final AuthProperties properties;
+    private final Clock serverClock;
     private final SecureRandom random = new SecureRandom();
 
-    public AuthService(JdbcTemplate jdbc, ExternalAuthenticationClient externalAuthenticationClient, AuthProperties properties) {
+    public AuthService(JdbcTemplate jdbc, ExternalAuthenticationClient externalAuthenticationClient,
+                       AuthProperties properties, Clock serverClock) {
         this.jdbc = jdbc;
         this.externalAuthenticationClient = externalAuthenticationClient;
         this.properties = properties;
+        this.serverClock = serverClock;
     }
 
     public LoginResult login(String username, String password) {
@@ -40,11 +44,18 @@ public class AuthService {
             ExternalAuthenticationClient.ExternalIdentity identity = externalAuthenticationClient.authenticate(username, password);
             CurrentUser user = findEnabledByUsername(identity.username());
             String token = newToken();
-            LocalDateTime expiresAt = LocalDateTime.now().plus(properties.getSessionTtl());
-            jdbc.update("insert into auth_sessions (user_id, token_hash, expires_at) values (?, ?, ?)",
-                    user.id(), sha256(token), Timestamp.valueOf(expiresAt));
-            log.info("login succeeded username={} userId={} role={} departmentId={} sessionTtl={}",
-                    user.username(), user.id(), user.role(), user.departmentId(), properties.getSessionTtl());
+            Instant issuedAt = serverClock.instant();
+            Instant expiresAt = issuedAt.plus(properties.getSessionTtl());
+            long expiresAtEpochMs = expiresAt.toEpochMilli();
+            Timestamp issuedAtTimestamp = Timestamp.from(issuedAt);
+            jdbc.update("""
+                    insert into auth_sessions
+                        (user_id, token_hash, expires_at, expires_at_epoch_ms, created_at, last_seen_at)
+                    values (?, ?, ?, ?, ?, ?)
+                    """, user.id(), sha256(token), Timestamp.from(expiresAt), expiresAtEpochMs,
+                    issuedAtTimestamp, issuedAtTimestamp);
+            log.info("login succeeded username={} userId={} role={} departmentId={} sessionTtl={} expiresAtEpochMs={}",
+                    user.username(), user.id(), user.role(), user.departmentId(), properties.getSessionTtl(), expiresAtEpochMs);
             return new LoginResult(token, expiresAt.toString(), user);
         } catch (RuntimeException exception) {
             log.warn("login failed username={} errorType={} error={}", username, exception.getClass().getSimpleName(),
@@ -53,17 +64,35 @@ public class AuthService {
         }
     }
 
+    /**
+     * Session expiry is deliberately evaluated with the application server clock, never with the database clock.
+     * The persisted epoch value avoids timezone conversion differences between the application JVM and MySQL.
+     */
     public CurrentUser authenticateToken(String token) {
         if (token == null || token.isBlank()) return null;
-        List<CurrentUser> users = jdbc.query("""
-                select u.id, u.username, u.display_name, u.role, u.department_id
+        String tokenHash = sha256(token);
+        List<AuthenticatedSession> sessions = jdbc.query("""
+                select u.id, u.username, u.display_name, u.role, u.department_id, s.expires_at_epoch_ms
                 from auth_sessions s join app_users u on u.id = s.user_id
-                where s.token_hash = ? and s.expires_at > CURRENT_TIMESTAMP and u.enabled = TRUE
-                """, (rs, row) -> toUser(rs.getLong("id"), rs.getString("username"), rs.getString("display_name"),
-                rs.getString("role"), rs.getObject("department_id", Long.class)), sha256(token));
-        if (users.isEmpty()) return null;
-        jdbc.update("update auth_sessions set last_seen_at = CURRENT_TIMESTAMP where token_hash = ?", sha256(token));
-        return users.getFirst();
+                where s.token_hash = ? and u.enabled = TRUE
+                """, (rs, row) -> new AuthenticatedSession(
+                toUser(rs.getLong("id"), rs.getString("username"), rs.getString("display_name"),
+                        rs.getString("role"), rs.getObject("department_id", Long.class)),
+                rs.getObject("expires_at_epoch_ms", Long.class)), tokenHash);
+        if (sessions.isEmpty()) return null;
+
+        AuthenticatedSession session = sessions.getFirst();
+        long serverNowEpochMs = serverClock.millis();
+        if (session.expiresAtEpochMs() == null || session.expiresAtEpochMs() <= serverNowEpochMs) {
+            jdbc.update("delete from auth_sessions where token_hash = ?", tokenHash);
+            log.info("token rejected reason=expired-or-legacy serverNowEpochMs={} expiresAtEpochMs={}",
+                    serverNowEpochMs, session.expiresAtEpochMs());
+            return null;
+        }
+
+        jdbc.update("update auth_sessions set last_seen_at = ? where token_hash = ?",
+                Timestamp.from(serverClock.instant()), tokenHash);
+        return session.user();
     }
 
     public void logout(String token) {
@@ -110,6 +139,8 @@ public class AuthService {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }
     }
+
+    private record AuthenticatedSession(CurrentUser user, Long expiresAtEpochMs) {}
 
     public record LoginResult(String token, String expiresAt, CurrentUser user) {}
 }
