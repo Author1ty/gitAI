@@ -297,3 +297,73 @@ body { margin: 0; min-width: 320px; min-height: 100vh; }
   .scope-selector-grid { grid-template-columns: 1fr; }
   .scope-reset-button { width: 100%; }
 }
+
+
+/* Catalog maintenance: each level exposes its own safe delete action beside the create form. */
+.catalog-entity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #edf0f6;
+}
+.catalog-entity-list > .ant-typography-secondary { font-size: 12px; line-height: 1.6; }
+.catalog-entity-items { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.catalog-entity-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid #edf0f6;
+  border-radius: 8px;
+  background: #fafbfe;
+}
+.catalog-entity-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #273451;
+}
+.catalog-entity-name > span { display: grid; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-entity-name small { overflow: hidden; color: #8993a8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The synchronization selection is intentionally compact and shows both choice and execution impact. */
+.sync-scope-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, .85fr); gap: 14px; }
+.sync-scope-step, .sync-scope-summary {
+  display: grid;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid #e8e5fb;
+  border-radius: 10px;
+  background: #faf9ff;
+}
+.sync-scope-step__title { display: flex; align-items: flex-start; gap: 9px; }
+.sync-scope-step__title > span {
+  display: inline-grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  flex: 0 0 auto;
+  color: #fff;
+  background: #6656d8;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+}
+.sync-scope-step__title > div { display: grid; gap: 2px; }
+.sync-scope-step__title .ant-typography-secondary { font-size: 12px; line-height: 1.45; }
+.sync-scope-step .ant-tree-select { width: 100%; }
+.sync-scope-summary { align-content: start; background: #f7f8fc; border-color: #e8ecf4; }
+.sync-scope-summary__tag { width: fit-content; max-width: 100%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-scope-summary .scope-reset-button { justify-self: start; }
+@media (max-width: 840px) {
+  .sync-scope-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 576px) {
+  .catalog-entity-item { align-items: flex-start; }
+  .sync-scope-summary .scope-reset-button { width: 100%; }
+}

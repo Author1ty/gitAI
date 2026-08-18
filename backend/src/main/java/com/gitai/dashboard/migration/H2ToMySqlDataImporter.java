@@ -30,7 +30,7 @@ public class H2ToMySqlDataImporter {
             table("repository_groups", "id", "project_id", "name"),
             table("repositories", "id", "project_id", "group_id", "name", "git_url", "default_branch", "mirror_path",
                     "last_synced_at", "last_sync_status", "last_sync_error", "history_base_sha", "history_since_sha", "history_offset",
-                    "history_complete", "synced_head_sha"),
+                    "history_complete", "synced_head_sha", "sync_configured_at", "sync_window_initialized"),
             table("daily_attribution_stats", "id", "repository_id", "stat_date", "ai_lines", "human_lines", "mixed_lines", "unknown_lines", "commit_count", "synced_at"),
             table("agent_daily_stats", "id", "repository_id", "stat_date", "agent", "model", "ai_lines", "session_count"),
             table("commit_attribution_stats", "id", "repository_id", "commit_sha", "commit_date", "commit_author", "commit_subject",

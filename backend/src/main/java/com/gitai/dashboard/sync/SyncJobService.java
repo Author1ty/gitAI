@@ -170,11 +170,12 @@ public class SyncJobService {
     public SyncJobView cancelQueuedJob(long jobId, Long departmentId) {
         log.info("sync job cancellation requested jobId={} departmentId={}", jobId, departmentId);
         getJob(jobId, departmentId);
+        Timestamp now = Timestamp.valueOf(LocalDateTime.now());
         int updated = jdbc.update("""
-                update sync_jobs set status = 'CANCELLED', finished_at = CURRENT_TIMESTAMP, active_repository_id = null,
-                phase = 'CANCELLED', phase_updated_at = CURRENT_TIMESTAMP, message = 'Cancelled before execution'
+                update sync_jobs set status = 'CANCELLED', finished_at = ?, active_repository_id = null,
+                phase = 'CANCELLED', phase_updated_at = ?, message = 'Cancelled before execution'
                 where id = ? and status = 'QUEUED'
-                """, jobId);
+                """, now, now, jobId);
         if (updated == 0) {
             SyncJobView job = getJob(jobId, departmentId);
             if ("RUNNING".equals(job.status())) {
@@ -189,10 +190,11 @@ public class SyncJobService {
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverJobsAfterRestart() {
+        Timestamp now = Timestamp.valueOf(LocalDateTime.now());
         Integer recovered = transactions.execute(status -> jdbc.update("""
-                update sync_jobs set status = 'QUEUED', started_at = null, phase = 'QUEUED', phase_updated_at = CURRENT_TIMESTAMP,
+                update sync_jobs set status = 'QUEUED', started_at = null, phase = 'QUEUED', phase_updated_at = ?,
                 message = 'Recovered into queue after service restart' where status = 'RUNNING'
-                """));
+                """, now));
         log.info("sync jobs recovered after restart recoveredCount={}", recovered == null ? 0 : recovered);
         dispatchQueuedJobs();
     }
@@ -210,8 +212,8 @@ public class SyncJobService {
         try {
             jdbc.update("""
                     insert into sync_jobs (repository_id, active_repository_id, status, phase, phase_updated_at, message)
-                    values (?, ?, 'QUEUED', 'QUEUED', CURRENT_TIMESTAMP, 'Waiting for a Git worker')
-                    """, repositoryId, repositoryId);
+                    values (?, ?, 'QUEUED', 'QUEUED', ?, 'Waiting for a Git worker')
+                    """, repositoryId, repositoryId, Timestamp.valueOf(LocalDateTime.now()));
         } catch (DuplicateKeyException exception) {
             List<SyncJobView> existing = jdbc.query("""
                     select j.id, j.repository_id, r.name repository_name, j.status, j.requested_at, j.started_at, j.finished_at,
@@ -254,11 +256,12 @@ public class SyncJobService {
         List<Long> candidates = jdbc.queryForList("select id from sync_jobs where status = 'QUEUED' order by requested_at, id limit ?", Long.class, capacity);
         List<Long> claimed = new ArrayList<>();
         for (Long jobId : candidates) {
+            Timestamp now = Timestamp.valueOf(LocalDateTime.now());
             if (jdbc.update("""
-                    update sync_jobs set status = 'RUNNING', started_at = CURRENT_TIMESTAMP, phase = 'PREPARING_MIRROR',
-                    phase_updated_at = CURRENT_TIMESTAMP, message = 'Preparing Git mirror'
+                    update sync_jobs set status = 'RUNNING', started_at = ?, phase = 'PREPARING_MIRROR',
+                    phase_updated_at = ?, message = 'Preparing Git mirror'
                     where id = ? and status = 'QUEUED'
-                    """, jobId) == 1) {
+                    """, now, now, jobId) == 1) {
                 claimed.add(jobId);
             }
         }
@@ -306,20 +309,22 @@ public class SyncJobService {
 
     private void completeJob(long jobId, String status, long processedCommits, boolean historyComplete, long historyOffset,
                              String message, String error) {
+        Timestamp now = Timestamp.valueOf(LocalDateTime.now());
         jdbc.update("""
-                update sync_jobs set status = ?, finished_at = CURRENT_TIMESTAMP, processed_commits = ?, batch_commit_count = ?,
-                history_complete = ?, history_offset = ?, phase = ?, phase_updated_at = CURRENT_TIMESTAMP, message = ?,
+                update sync_jobs set status = ?, finished_at = ?, processed_commits = ?, batch_commit_count = ?,
+                history_complete = ?, history_offset = ?, phase = ?, phase_updated_at = ?, message = ?,
                 error_message = ?, active_repository_id = null where id = ?
-                """, status, processedCommits, processedCommits, historyComplete, historyOffset,
-                "SUCCESS".equals(status) ? "COMPLETED" : "FAILED", abbreviate(message, 500), abbreviate(error, 2000), jobId);
+                """, status, now, processedCommits, processedCommits, historyComplete, historyOffset,
+                "SUCCESS".equals(status) ? "COMPLETED" : "FAILED", now, abbreviate(message, 500), abbreviate(error, 2000), jobId);
     }
 
     /** Writes at most a few dozen checkpoints per bounded batch, keeping job visibility inexpensive for large repositories. */
     private void reportProgress(long jobId, GitAiSyncService.SyncStage stage, long processedCommits, long batchCommitCount) {
         jdbc.update("""
-                update sync_jobs set phase = ?, phase_updated_at = CURRENT_TIMESTAMP, processed_commits = ?,
+                update sync_jobs set phase = ?, phase_updated_at = ?, processed_commits = ?,
                 batch_commit_count = ?, message = ? where id = ? and status = 'RUNNING'
-                """, stage.name(), processedCommits, batchCommitCount, progressMessage(stage, processedCommits, batchCommitCount), jobId);
+                """, stage.name(), Timestamp.valueOf(LocalDateTime.now()), processedCommits, batchCommitCount,
+                progressMessage(stage, processedCommits, batchCommitCount), jobId);
         if (stage != GitAiSyncService.SyncStage.READING_ATTRIBUTION || processedCommits == 0 || processedCommits == batchCommitCount) {
             log.info("sync worker progress jobId={} stage={} processedCommits={} batchCommitCount={}", jobId, stage, processedCommits, batchCommitCount);
         } else if (processedCommits % 100 == 0) {

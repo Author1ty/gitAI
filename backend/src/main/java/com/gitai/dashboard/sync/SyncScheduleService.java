@@ -44,9 +44,9 @@ public class SyncScheduleService {
         log.info("sync schedule update requested enabled={} intervalMinutes={}", request.enabled(), request.intervalMinutes());
         jdbc.update("""
                 update sync_schedule_settings
-                set enabled = ?, interval_minutes = ?, last_triggered_at = null, updated_at = CURRENT_TIMESTAMP
+                set enabled = ?, interval_minutes = ?, last_triggered_at = null, updated_at = ?
                 where id = 1
-                """, request.enabled(), request.intervalMinutes());
+                """, request.enabled(), request.intervalMinutes(), Timestamp.valueOf(LocalDateTime.now()));
         SyncScheduleView view = getSchedule();
         log.info("sync schedule updated enabled={} intervalMinutes={} nextRunAt={} due={}",
                 view.enabled(), view.intervalMinutes(), view.nextRunAt(), view.due());
@@ -73,12 +73,13 @@ public class SyncScheduleService {
         }
 
         LocalDateTime cutoff = LocalDateTime.now().minusMinutes(settings.intervalMinutes());
+        Timestamp now = Timestamp.valueOf(LocalDateTime.now());
         int claimed = jdbc.update("""
                 update sync_schedule_settings
-                set last_triggered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                set last_triggered_at = ?, updated_at = ?
                 where id = 1 and enabled = TRUE and interval_minutes = ?
                   and (last_triggered_at is null or last_triggered_at <= ?)
-                """, settings.intervalMinutes(), Timestamp.valueOf(cutoff));
+                """, now, now, settings.intervalMinutes(), Timestamp.valueOf(cutoff));
         if (claimed != 1) {
             log.debug("scheduled sync check skipped reason=not-due intervalMinutes={} lastTriggeredAt={}",
                     settings.intervalMinutes(), settings.lastTriggeredAt());
@@ -93,7 +94,7 @@ public class SyncScheduleService {
             return true;
         } catch (RuntimeException exception) {
             // Do not burn the interval if the queue could not be populated. A later scheduler tick may retry safely.
-            jdbc.update("update sync_schedule_settings set last_triggered_at = null, updated_at = CURRENT_TIMESTAMP where id = 1");
+            jdbc.update("update sync_schedule_settings set last_triggered_at = null, updated_at = ? where id = 1", Timestamp.valueOf(LocalDateTime.now()));
             log.error("scheduled sync enqueue failed intervalMinutes={}, clock reset for retry", settings.intervalMinutes(), exception);
             throw exception;
         }

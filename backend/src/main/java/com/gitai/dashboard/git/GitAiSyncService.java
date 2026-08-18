@@ -11,7 +11,10 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -65,10 +68,14 @@ public class GitAiSyncService {
      */
     public SyncResult syncRepository(long repositoryId, SyncProgressListener progress) {
         RepositoryTarget target = findRepository(repositoryId);
+        if (!target.syncWindowInitialized()) {
+            initializeSyncWindow(target);
+            target = findRepository(repositoryId);
+        }
         long started = System.nanoTime();
-        log.info("repository sync started repositoryId={} repository={} remote={} branch={} historyOffset={} historyComplete={}",
+        log.info("repository sync started repositoryId={} repository={} remote={} branch={} configuredAt={} lowerBound={} historyOffset={} historyComplete={}",
                 target.id(), target.name(), LogSupport.safeRemote(target.gitUrl()), target.defaultBranch(),
-                target.historyOffset(), target.historyComplete());
+                target.syncConfiguredAt(), initialSinceAt(target), target.historyOffset(), target.historyComplete());
         jdbc.update("update repositories set last_sync_status = 'SYNCING', last_sync_error = null where id = ?", repositoryId);
         try {
             progress.onProgress(SyncStage.PREPARING_MIRROR, 0, 0);
@@ -79,8 +86,8 @@ public class GitAiSyncService {
             progress.onProgress(SyncStage.READING_COMMITS, 0, 0);
             String currentHead = git.runGit(mirrorPath, "rev-parse", "--verify", target.defaultBranch()).trim();
             SyncRange range = selectRange(target, mirrorPath, currentHead);
-            log.info("repository sync range selected repositoryId={} currentHead={} baseSha={} sinceSha={} offset={}",
-                    target.id(), abbreviateSha(currentHead), abbreviateSha(range.baseSha()), abbreviateSha(range.sinceSha()), range.offset());
+            log.info("repository sync range selected repositoryId={} currentHead={} baseSha={} sinceSha={} sinceAt={} offset={}",
+                    target.id(), abbreviateSha(currentHead), abbreviateSha(range.baseSha()), abbreviateSha(range.sinceSha()), range.sinceAt(), range.offset());
             List<CommitInfo> commits = readCommits(mirrorPath, range);
 
             int batchCommitCount = commits.size();
@@ -103,7 +110,7 @@ public class GitAiSyncService {
 
             progress.onProgress(SyncStage.FINALIZING, batchCommitCount, batchCommitCount);
             persistRangeProgress(target.id(), range, historyOffset, historyComplete);
-            jdbc.update("update repositories set last_synced_at = CURRENT_TIMESTAMP, last_sync_status = 'SUCCESS', last_sync_error = null where id = ?", repositoryId);
+            jdbc.update("update repositories set last_synced_at = ?, last_sync_status = 'SUCCESS', last_sync_error = null where id = ?", LocalDateTime.now(), repositoryId);
             long aiLines = attributions.stream().mapToLong(CommitAttribution::aiLines).sum();
             long humanLines = attributions.stream().mapToLong(CommitAttribution::humanLines).sum();
             long unknownLines = attributions.stream().mapToLong(CommitAttribution::unknownLines).sum();
@@ -123,12 +130,14 @@ public class GitAiSyncService {
 
     private RepositoryTarget findRepository(long repositoryId) {
         List<RepositoryTarget> targets = jdbc.query("""
-                select id, name, git_url, default_branch, mirror_path, history_base_sha, history_since_sha,
-                       history_offset, history_complete, synced_head_sha
+                select id, name, git_url, default_branch, mirror_path, sync_configured_at, sync_window_initialized,
+                       history_base_sha, history_since_sha, history_offset, history_complete, synced_head_sha
                 from repositories where id = ?
                 """, (rs, row) -> new RepositoryTarget(rs.getLong("id"), rs.getString("name"),
                 rs.getString("git_url"), rs.getString("default_branch"), rs.getString("mirror_path"),
-                rs.getString("history_base_sha"), rs.getString("history_since_sha"), rs.getLong("history_offset"),
+                rs.getTimestamp("sync_configured_at") == null ? null : rs.getTimestamp("sync_configured_at").toLocalDateTime(),
+                rs.getBoolean("sync_window_initialized"), rs.getString("history_base_sha"),
+                rs.getString("history_since_sha"), rs.getLong("history_offset"),
                 rs.getBoolean("history_complete"), rs.getString("synced_head_sha")), repositoryId);
         if (targets.isEmpty()) throw new IllegalArgumentException("Repository was not found: " + repositoryId);
         return targets.getFirst();
@@ -206,27 +215,42 @@ public class GitAiSyncService {
     private SyncRange selectRange(RepositoryTarget target, Path mirrorPath, String currentHead) {
         if (!target.historyComplete()) {
             return new SyncRange(blankToNull(target.historyBaseSha()) == null ? currentHead : target.historyBaseSha(),
-                    blankToNull(target.historySinceSha()), target.historyOffset());
+                    blankToNull(target.historySinceSha()), target.historyOffset(),
+                    blankToNull(target.historySinceSha()) == null ? initialSinceAt(target) : null);
         }
         if (blankToNull(target.syncedHeadSha()) == null || target.syncedHeadSha().equals(currentHead)) {
             if (target.syncedHeadSha() != null && target.syncedHeadSha().equals(currentHead)) {
-                return new SyncRange(currentHead, currentHead, 0); // an empty, bounded no-op range
+                return new SyncRange(currentHead, currentHead, 0, null); // an empty, bounded no-op range
             }
-            return new SyncRange(currentHead, null, 0);
+            return initialRange(target, currentHead);
         }
 
         GitCommandService.CommandResult ancestor = git.runGitAllowFailure(mirrorPath, "merge-base", "--is-ancestor", target.syncedHeadSha(), currentHead);
-        if (ancestor.exitCode() == 0) return new SyncRange(currentHead, target.syncedHeadSha(), 0);
+        if (ancestor.exitCode() == 0) return new SyncRange(currentHead, target.syncedHeadSha(), 0, null);
 
-        // A force-push invalidates branch-based aggregates. Reset only this repository, then rebuild it in bounded batches.
+        // A force-push invalidates branch-based aggregates. Reset only this repository, then rebuild the configured one-month window.
         clearRepositoryStats(target.id());
-        return new SyncRange(currentHead, null, 0);
+        return initialRange(target, currentHead);
+    }
+
+    private SyncRange initialRange(RepositoryTarget target, String currentHead) {
+        return new SyncRange(currentHead, null, 0, initialSinceAt(target));
+    }
+
+    private LocalDateTime initialSinceAt(RepositoryTarget target) {
+        LocalDateTime configuredAt = target.syncConfiguredAt() == null ? LocalDateTime.now() : target.syncConfiguredAt();
+        return configuredAt.minusMonths(1);
+    }
+
+    private String formatGitDate(LocalDateTime value) {
+        return value.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private List<CommitInfo> readCommits(Path mirrorPath, SyncRange range) {
         if (range.sinceSha() != null && range.sinceSha().equals(range.baseSha())) return List.of();
         List<String> args = new ArrayList<>(List.of("log", "--format=%H%x1f%cI%x1f%an%x1f%s",
                 "--max-count=" + properties.getMaxCommitsPerSync(), "--skip=" + range.offset()));
+        if (range.sinceAt() != null) args.add("--since=" + formatGitDate(range.sinceAt()));
         args.add(range.sinceSha() == null ? range.baseSha() : range.sinceSha() + ".." + range.baseSha());
         String output = git.runGit(mirrorPath, args.toArray(String[]::new));
         List<CommitInfo> commits = new ArrayList<>();
@@ -357,10 +381,10 @@ public class GitAiSyncService {
             jdbc.update("delete from daily_attribution_stats where repository_id = ? and stat_date = ?", repositoryId, date);
             jdbc.update("""
                     insert into daily_attribution_stats (repository_id, stat_date, ai_lines, human_lines, mixed_lines, unknown_lines, commit_count, synced_at)
-                    select repository_id, commit_date, sum(ai_lines), sum(human_lines), sum(mixed_lines), sum(unknown_lines), count(*), CURRENT_TIMESTAMP
+                    select repository_id, commit_date, sum(ai_lines), sum(human_lines), sum(mixed_lines), sum(unknown_lines), count(*), ?
                     from commit_attribution_stats where repository_id = ? and commit_date = ?
                     group by repository_id, commit_date
-                    """, repositoryId, date);
+                    """, LocalDateTime.now(), repositoryId, date);
             jdbc.update("delete from agent_daily_stats where repository_id = ? and stat_date = ?", repositoryId, date);
             jdbc.update("""
                     insert into agent_daily_stats (repository_id, stat_date, agent, model, ai_lines, session_count)
@@ -371,6 +395,19 @@ public class GitAiSyncService {
                     group by c.repository_id, c.commit_date, a.agent, a.model
                     """, repositoryId, date);
         }
+    }
+
+    private void initializeSyncWindow(RepositoryTarget target) {
+        LocalDateTime configuredAt = LocalDateTime.now();
+        log.info("initializing repository sync window repositoryId={} configuredAt={} lowerBound={} action=clear-existing-attribution",
+                target.id(), configuredAt, configuredAt.minusMonths(1));
+        clearRepositoryStats(target.id());
+        jdbc.update("""
+                update repositories set sync_configured_at = ?, sync_window_initialized = TRUE,
+                history_base_sha = null, history_since_sha = null, history_offset = 0, history_complete = FALSE,
+                synced_head_sha = null, last_sync_status = 'NOT_SYNCED', last_sync_error = null
+                where id = ?
+                """, configuredAt, target.id());
     }
 
     private void persistRangeProgress(long repositoryId, SyncRange range, long offset, boolean completed) {
@@ -406,9 +443,10 @@ public class GitAiSyncService {
     }
 
     private record RepositoryTarget(long id, String name, String gitUrl, String defaultBranch, String mirrorPath,
+                                    LocalDateTime syncConfiguredAt, boolean syncWindowInitialized,
                                     String historyBaseSha, String historySinceSha, long historyOffset,
                                     boolean historyComplete, String syncedHeadSha) {}
-    private record SyncRange(String baseSha, String sinceSha, long offset) {}
+    private record SyncRange(String baseSha, String sinceSha, long offset, LocalDateTime sinceAt) {}
     private record CommitInfo(String sha, LocalDate date, String author, String subject) {}
     private record ToolStat(long aiLines, long acceptedLines) {}
     private record AgentStat(long aiLines, long acceptedLines, int sessionCount) {}

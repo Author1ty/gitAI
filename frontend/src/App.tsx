@@ -1,7 +1,11 @@
-﻿import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import type { DataNode } from 'antd/es/tree';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
+import 'dayjs/locale/zh-cn';
+import zhCN from 'antd/locale/zh_CN';
+
+dayjs.locale('zh-cn');
 import {
   ApartmentOutlined,
   DashboardOutlined,
@@ -150,7 +154,15 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
 async function deleteJson<T>(path: string): Promise<T> {
   const response = await fetch(path, { method: 'DELETE', headers: getAuthHeaders() });
   handleUnauthorized(response);
-  if (!response.ok) { const detail = await response.text(); throw new Error(detail || '\u8bf7\u6c42\u5931\u8d25 (' + response.status + ')'); }
+  if (!response.ok) {
+    const body = await response.text();
+    let detail = body;
+    try {
+      const payload = JSON.parse(body) as { detail?: string; message?: string; title?: string };
+      detail = payload.detail || payload.message || payload.title || body;
+    } catch { /* plain-text error response */ }
+    throw new Error(detail || `\u8bf7\u6c42\u5931\u8d25 (` + response.status + `)`);
+  }
   return response.json() as Promise<T>;
 }
 
@@ -248,10 +260,11 @@ function StatCard({ title, value, icon, color, caption }: { title: string; value
   </Card>;
 }
 
-function CatalogDrawer({ filters, canCreateDepartment }: { filters?: FilterOptions; canCreateDepartment: boolean }) {
+function CatalogDrawer({ filters, canCreateDepartment, onHierarchyChanged }: { filters?: FilterOptions; canCreateDepartment: boolean; onHierarchyChanged?: () => void }) {
+  type CatalogEntityKind = 'department' | 'project' | 'group' | 'repository';
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [departmentForm] = Form.useForm();
   const [projectForm] = Form.useForm();
   const [groupForm] = Form.useForm();
@@ -259,36 +272,46 @@ function CatalogDrawer({ filters, canCreateDepartment }: { filters?: FilterOptio
   const queryClient = useQueryClient();
   const { message } = AntApp.useApp();
 
+  async function refreshCatalog() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['filters'] }),
+      queryClient.invalidateQueries({ queryKey: ['hierarchy'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['sync-jobs'] }),
+      queryClient.invalidateQueries({ queryKey: ['sync-queue-status'] }),
+    ]);
+  }
+
   async function create(path: string, form: ReturnType<typeof Form.useForm>[0]) {
     try {
       const values = await form.validateFields();
       setSaving(true);
       await postJson<{ id: number }>(path, values);
       form.resetFields();
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['filters'] }),
-        queryClient.invalidateQueries({ queryKey: ['hierarchy'] }),
-      ]);
+      await refreshCatalog();
       message.success('\u5df2\u4fdd\u5b58\uff0c\u53ef\u7ee7\u7eed\u6dfb\u52a0\u4e0b\u4e00\u7ea7\u6570\u636e');
     } catch (error) {
       if (error instanceof Error && error.message) message.error(error.message);
     } finally { setSaving(false); }
   }
 
-  async function removeRepository(repositoryId: number, repositoryName: string) {
+  async function removeEntity(kind: CatalogEntityKind, entity: Option) {
+    const endpoint: Record<CatalogEntityKind, string> = {
+      department: 'departments', project: 'projects', group: 'groups', repository: 'repositories',
+    };
+    const labels: Record<CatalogEntityKind, string> = {
+      department: '\u90e8\u95e8', project: '\u9879\u76ee', group: '\u4ed3\u5e93\u5206\u7ec4', repository: '\u6570\u636e\u6e90',
+    };
+    const key = `${kind}-${entity.id}`;
     try {
-      setDeletingId(repositoryId);
-      await deleteJson<{ id: number }>('/api/catalog/repositories/' + repositoryId);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['filters'] }),
-        queryClient.invalidateQueries({ queryKey: ['hierarchy'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['sync-jobs'] }),
-      ]);
-      message.success('\u5df2\u5220\u9664\u6570\u636e\u6e90\u201c' + repositoryName + '\u201d\uff0c\u76f8\u5173\u5f52\u56e0\u7edf\u8ba1\u4e0e\u540c\u6b65\u4efb\u52a1\u5df2\u6e05\u7406');
+      setDeletingKey(key);
+      await deleteJson<{ id: number }>(`/api/catalog/${endpoint[kind]}/${entity.id}`);
+      onHierarchyChanged?.();
+      await refreshCatalog();
+      message.success(`\u5df2\u5220\u9664${labels[kind]}\u201c${entity.name}\u201d`);
     } catch (error) {
       if (error instanceof Error && error.message) message.error(error.message);
-    } finally { setDeletingId(null); }
+    } finally { setDeletingKey(null); }
   }
 
   const departments = filters?.departments ?? [];
@@ -298,64 +321,96 @@ function CatalogDrawer({ filters, canCreateDepartment }: { filters?: FilterOptio
   const departmentById = new Map(departments.map((item) => [item.id, item.name]));
   const projectById = new Map(projects.map((item) => [item.id, item]));
   const repositoryFormProjectId = Form.useWatch('projectId', repositoryForm) as number | undefined;
+  const repositoryDetail = (item: Option) => {
+    const project = projectById.get(item.parentId ?? -1);
+    const department = project ? departmentById.get(project.parentId ?? -1) : undefined;
+    return `\u90e8\u95e8\uff1a${department ?? '\u672a\u5206\u914d'} / \u9879\u76ee\uff1a${project?.name ?? '\u672a\u5206\u914d'} / ID: ${item.id}`;
+  };
   const projectOption = (item: Option) => ({ value: item.id, label: `${departmentById.get(item.parentId ?? -1) ?? '\u672a\u5206\u914d'} / ${item.name}` });
   const groupOption = (item: Option) => ({ value: item.id, label: `${projectById.get(item.parentId ?? -1)?.name ?? '\u672a\u5206\u914d'} / ${item.name}` });
   const repositoryFormGroupOptions = groups.filter((item) => !repositoryFormProjectId || item.parentId === repositoryFormProjectId).map(groupOption);
+
+  function entityList(kind: CatalogEntityKind, title: string, hint: string, items: Option[], detail: (item: Option) => string) {
+    const descriptions: Record<CatalogEntityKind, string> = {
+      department: '\u90e8\u95e8\u4e0b\u6709\u9879\u76ee\u6216\u5df2\u5206\u914d\u8d26\u53f7\u65f6\u4e0d\u5141\u8bb8\u5220\u9664\uff0c\u8bf7\u5148\u6e05\u7406\u4e0b\u7ea7\u7ed3\u6784\u548c\u8d26\u53f7\u6388\u6743\u3002',
+      project: '\u9879\u76ee\u4e0b\u6709\u4ed3\u5e93\u5206\u7ec4\u6216\u6570\u636e\u6e90\u65f6\u4e0d\u5141\u8bb8\u5220\u9664\uff0c\u8bf7\u5148\u6e05\u7406\u4e0b\u7ea7\u6570\u636e\u3002',
+      group: '\u4ed3\u5e93\u5206\u7ec4\u4e0b\u6709\u6570\u636e\u6e90\u65f6\u4e0d\u5141\u8bb8\u5220\u9664\uff0c\u8bf7\u5148\u5220\u9664\u6216\u8c03\u6574\u6240\u5c5e\u4ed3\u5e93\u3002',
+      repository: '\u5220\u9664\u540e\u5f52\u56e0\u7edf\u8ba1\u548c\u540c\u6b65\u4efb\u52a1\u5c06\u88ab\u6e05\u7406\uff0cGit mirror \u76ee\u5f55\u4f1a\u4fdd\u7559\u3002',
+    };
+    const icons: Record<CatalogEntityKind, React.ReactNode> = {
+      department: <TeamOutlined />, project: <DeploymentUnitOutlined />, group: <FolderOpenOutlined />, repository: <GithubOutlined />,
+    };
+    const confirmLabels: Record<CatalogEntityKind, string> = {
+      department: '\u8be5\u90e8\u95e8', project: '\u8be5\u9879\u76ee', group: '\u8be5\u4ed3\u5e93\u5206\u7ec4', repository: '\u8be5\u6570\u636e\u6e90',
+    };
+    return <div className="catalog-entity-list">
+      <Text strong>{title}</Text>
+      <Text type="secondary">{hint}</Text>
+      {items.length ? <div className="catalog-entity-items">
+        {items.map((item) => <div className="catalog-entity-item" key={`${kind}-${item.id}`}>
+          <div className="catalog-entity-name">{icons[kind]}<span><b>{item.name}{kind === 'repository' ? `\uff08ID: ${item.id}\uff09` : ''}</b><small>{detail(item)}</small></span></div>
+          <Popconfirm
+            title={`\u786e\u5b9a\u5220\u9664${confirmLabels[kind]}\u201c${item.name}\u201d\uff1f`}
+            description={descriptions[kind]}
+            okText={'\u5220\u9664'}
+            cancelText={'\u53d6\u6d88'}
+            okButtonProps={{ danger: true, loading: deletingKey === `${kind}-${item.id}` }}
+            onConfirm={() => removeEntity(kind, item)}
+          >
+            <Button danger type="text" size="small" icon={<DeleteOutlined />} loading={deletingKey === `${kind}-${item.id}`}>{'\u5220\u9664'}</Button>
+          </Popconfirm>
+        </div>)}
+      </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={'\u6682\u65e0\u53ef\u7ef4\u62a4\u6570\u636e'} />}
+    </div>;
+  }
+
   return <>
     <Button icon={<SettingOutlined />} onClick={() => setOpen(true)}>{'\u7ba1\u7406\u6570\u636e\u6e90'}</Button>
-    <Drawer title={'\u90e8\u95e8\u3001\u9879\u76ee\u4e0e\u4ed3\u5e93\u7ba1\u7406'} open={open} size={520} onClose={() => setOpen(false)} destroyOnHidden>
-      <Alert type="info" showIcon title={'\u5148\u5efa\u7acb\u7ec4\u7ec7\u5c42\u7ea7\uff0c\u518d\u540c\u6b65\u4ee3\u7801'} description={'\u63a8\u8350\u987a\u5e8f\uff1a\u90e8\u95e8 \u2192 \u9879\u76ee \u2192\uff08\u53ef\u9009\uff09\u4ed3\u5e93\u5206\u7ec4 \u2192 \u4ed3\u5e93\u3002\u65b0\u589e\u4ed3\u5e93\u540e\uff0c\u8bf7\u524d\u5f80\u201c\u4ed3\u5e93\u4e0e\u540c\u6b65\u201d\u53d1\u8d77\u521d\u59cb\u540c\u6b65\u3002'} />
+    <Drawer title={'\u90e8\u95e8\u3001\u9879\u76ee\u4e0e\u4ed3\u5e93\u7ba1\u7406'} open={open} size={560} onClose={() => setOpen(false)} destroyOnHidden>
+      <Alert type="info" showIcon title={'\u5148\u5efa\u7acb\u7ec4\u7ec7\u5c42\u7ea7\uff0c\u518d\u540c\u6b65\u4ee3\u7801'} description={'\u63a8\u8350\u987a\u5e8f\uff1a\u90e8\u95e8 \u2192 \u9879\u76ee \u2192\uff08\u53ef\u9009\uff09\u4ed3\u5e93\u5206\u7ec4 \u2192 \u4ed3\u5e93\u3002\u6bcf\u4e2a\u5c42\u7ea7\u5747\u53ef\u5220\u9664\uff0c\u4f46\u4e3a\u907f\u514d\u8bef\u5220\uff0c\u5fc5\u987b\u5148\u6e05\u7406\u5176\u4e0b\u7ea7\u6570\u636e\u3002'} />
       <Tabs className="catalog-tabs" items={[
-        { key: 'department', label: '\u90e8\u95e8', children: <Form form={departmentForm} layout="vertical" onFinish={() => create('/api/catalog/departments', departmentForm)}>
-          <Form.Item name="name" label={'\u90e8\u95e8\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u90e8\u95e8\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1a\u5e73\u53f0\u7814\u53d1\u90e8'} /></Form.Item>
-          <Form.Item name="description" label={'\u8bf4\u660e\uff08\u53ef\u9009\uff09'}><Input.TextArea rows={2} placeholder={'\u90e8\u95e8\u804c\u8d23\u6216\u8bf4\u660e'} /></Form.Item>
-          <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u90e8\u95e8'}</Button>
-        </Form> },
-        { key: 'project', label: '\u9879\u76ee', children: <Form form={projectForm} layout="vertical" onFinish={() => create('/api/catalog/projects', projectForm)}>
-          <Form.Item name="departmentId" label={'\u6240\u5c5e\u90e8\u95e8'} rules={[{ required: true, message: '\u8bf7\u9009\u62e9\u90e8\u95e8' }]}><Select showSearch optionFilterProp="label" placeholder={'\u9009\u62e9\u90e8\u95e8'} options={departments.map((item) => ({ value: item.id, label: item.name }))} /></Form.Item>
-          <Form.Item name="name" label={'\u9879\u76ee\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u9879\u76ee\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1a\u7edf\u4e00\u95e8\u6237'} /></Form.Item>
-          <Form.Item name="description" label={'\u8bf4\u660e\uff08\u53ef\u9009\uff09'}><Input.TextArea rows={2} /></Form.Item>
-          <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u9879\u76ee'}</Button>
-        </Form> },
-        { key: 'group', label: '\u4ed3\u5e93\u5206\u7ec4', children: <Form form={groupForm} layout="vertical" onFinish={() => create('/api/catalog/groups', groupForm)}>
-          <Form.Item name="projectId" label={'\u6240\u5c5e\u9879\u76ee'} rules={[{ required: true, message: '\u8bf7\u9009\u62e9\u9879\u76ee' }]}><Select showSearch optionFilterProp="label" placeholder={'\u9009\u62e9\u9879\u76ee'} options={projects.map(projectOption)} /></Form.Item>
-          <Form.Item name="name" label={'\u5206\u7ec4\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u5206\u7ec4\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1a\u540e\u7aef\u670d\u52a1'} /></Form.Item>
-          <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u4ed3\u5e93\u5206\u7ec4'}</Button>
-        </Form> },
+        { key: 'department', label: '\u90e8\u95e8', children: <>
+          <Form form={departmentForm} layout="vertical" onFinish={() => create('/api/catalog/departments', departmentForm)}>
+            <Form.Item name="name" label={'\u90e8\u95e8\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u90e8\u95e8\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1a\u5e73\u53f0\u7814\u53d1\u90e8'} /></Form.Item>
+            <Form.Item name="description" label={'\u8bf4\u660e\uff08\u53ef\u9009\uff09'}><Input.TextArea rows={2} placeholder={'\u90e8\u95e8\u804c\u8d23\u6216\u8bf4\u660e'} /></Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u90e8\u95e8'}</Button>
+          </Form>
+          {entityList('department', '\u5df2\u914d\u7f6e\u7684\u90e8\u95e8', '\u4ec5\u6700\u9ad8\u6743\u9650\u53ef\u5220\u9664\u90e8\u95e8\u3002', departments, (item) => `${projects.filter((project) => project.parentId === item.id).length} \u4e2a\u9879\u76ee`)}
+        </> },
+        { key: 'project', label: '\u9879\u76ee', children: <>
+          <Form form={projectForm} layout="vertical" onFinish={() => create('/api/catalog/projects', projectForm)}>
+            <Form.Item name="departmentId" label={'\u6240\u5c5e\u90e8\u95e8'} rules={[{ required: true, message: '\u8bf7\u9009\u62e9\u90e8\u95e8' }]}><Select showSearch optionFilterProp="label" placeholder={'\u9009\u62e9\u90e8\u95e8'} options={departments.map((item) => ({ value: item.id, label: item.name }))} /></Form.Item>
+            <Form.Item name="name" label={'\u9879\u76ee\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u9879\u76ee\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1a\u7edf\u4e00\u95e8\u6237'} /></Form.Item>
+            <Form.Item name="description" label={'\u8bf4\u660e\uff08\u53ef\u9009\uff09'}><Input.TextArea rows={2} /></Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u9879\u76ee'}</Button>
+          </Form>
+          {entityList('project', '\u5df2\u914d\u7f6e\u7684\u9879\u76ee', '\u5220\u9664\u9879\u76ee\u524d\uff0c\u8bf7\u5148\u5220\u9664\u5176\u4e0b\u6240\u6709\u5206\u7ec4\u548c\u6570\u636e\u6e90\u3002', projects, (item) => `${departmentById.get(item.parentId ?? -1) ?? '\u672a\u5206\u914d'} \u00b7 ${repositories.filter((repository) => repository.parentId === item.id).length} \u4e2a\u6570\u636e\u6e90`)}
+        </> },
+        { key: 'group', label: '\u4ed3\u5e93\u5206\u7ec4', children: <>
+          <Form form={groupForm} layout="vertical" onFinish={() => create('/api/catalog/groups', groupForm)}>
+            <Form.Item name="projectId" label={'\u6240\u5c5e\u9879\u76ee'} rules={[{ required: true, message: '\u8bf7\u9009\u62e9\u9879\u76ee' }]}><Select showSearch optionFilterProp="label" placeholder={'\u9009\u62e9\u9879\u76ee'} options={projects.map(projectOption)} /></Form.Item>
+            <Form.Item name="name" label={'\u5206\u7ec4\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u5206\u7ec4\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1a\u540e\u7aef\u670d\u52a1'} /></Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u4ed3\u5e93\u5206\u7ec4'}</Button>
+          </Form>
+          {entityList('group', '\u5df2\u914d\u7f6e\u7684\u4ed3\u5e93\u5206\u7ec4', '\u5220\u9664\u5206\u7ec4\u524d\uff0c\u8bf7\u5148\u6e05\u7a7a\u5206\u7ec4\u4e2d\u7684\u6570\u636e\u6e90\u3002', groups, (item) => `${projectById.get(item.parentId ?? -1)?.name ?? '\u672a\u5206\u914d\u9879\u76ee'}`)}
+        </> },
         { key: 'repository', label: '\u4ed3\u5e93', children: <>
           <Form form={repositoryForm} layout="vertical" onFinish={() => create('/api/catalog/repositories', repositoryForm)}>
             <Form.Item name="projectId" label={'\u6240\u5c5e\u9879\u76ee'} rules={[{ required: true, message: '\u8bf7\u9009\u62e9\u9879\u76ee' }]}><Select showSearch optionFilterProp="label" placeholder={'\u9009\u62e9\u9879\u76ee'} options={projects.map(projectOption)} /></Form.Item>
-          <Form.Item name="groupId" label={'\u6240\u5c5e\u4ed3\u5e93\u5206\u7ec4'}><Select allowClear placeholder={'\u53ef\u9009\u4ed3\u5e93\u5206\u7ec4'} showSearch optionFilterProp="label" options={repositoryFormGroupOptions} /></Form.Item>
+            <Form.Item name="groupId" label={'\u6240\u5c5e\u4ed3\u5e93\u5206\u7ec4'}><Select allowClear placeholder={'\u53ef\u9009\u4ed3\u5e93\u5206\u7ec4'} showSearch optionFilterProp="label" options={repositoryFormGroupOptions} /></Form.Item>
             <Form.Item name="name" label={'\u6570\u636e\u6e90\u540d\u79f0'} rules={[{ required: true, message: '\u8bf7\u8f93\u5165\u6570\u636e\u6e90\u540d\u79f0' }]}><Input placeholder={'\u4f8b\u5982\uff1apayment-api'} /></Form.Item>
             <Form.Item name="gitUrl" label="Git URL" rules={[{ required: true, message: 'Git URL \u4e0d\u80fd\u4e3a\u7a7a' }]}><Input placeholder="ssh://git.example.com/team/payment-api.git" /></Form.Item>
             <Form.Item name="defaultBranch" label={'\u9ed8\u8ba4\u5206\u652f'} initialValue="main"><Input placeholder="main" /></Form.Item>
             <Form.Item name="mirrorPath" label={'Git mirror \u76ee\u5f55\uff08\u53ef\u9009\uff09'}><Input placeholder={'\u7559\u7a7a\u5219\u4f7f\u7528\u7cfb\u7edf\u9ed8\u8ba4\u76ee\u5f55'} /></Form.Item>
             <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={saving}>{'\u65b0\u589e\u6570\u636e\u6e90'}</Button>
           </Form>
-          <div className="catalog-repository-list">
-            <Text strong>{'\u5df2\u914d\u7f6e\u7684\u6570\u636e\u6e90'}</Text>
-            <Text type="secondary">{'\u5220\u9664\u6570\u636e\u6e90\u4f1a\u540c\u65f6\u6e05\u7406\u5f52\u56e0\u7edf\u8ba1\u548c\u540c\u6b65\u4efb\u52a1\uff0cGit mirror \u76ee\u5f55\u4f1a\u4fdd\u7559'}</Text>
-            {repositories.length ? <div className="catalog-repository-items">
-              {repositories.map((repository) => <div className="catalog-repository-item" key={repository.id}>
-                <div className="catalog-repository-name"><GithubOutlined /><span><b>{repository.name}</b><small>{projectById.get(repository.parentId ?? -1)?.name ?? '\u672a\u5206\u914d\u9879\u76ee'}</small></span></div>
-                <Popconfirm
-                  title={'\u786e\u5b9a\u5220\u9664\u8be5\u6570\u636e\u6e90\uff1f'}
-                  description={'\u5220\u9664\u540e\u5f52\u56e0\u7edf\u8ba1\u548c\u540c\u6b65\u4efb\u52a1\u5c06\u88ab\u6e05\u7406\uff0c\u4e14\u4e0d\u53ef\u64a4\u9500\u3002'}
-                  okText={'\u5220\u9664'}
-                  cancelText={'\u53d6\u6d88'}
-                  okButtonProps={{ danger: true, loading: deletingId === repository.id }}
-                  onConfirm={() => removeRepository(repository.id, repository.name)}
-                >
-                  <Button danger type="text" size="small" icon={<DeleteOutlined />} loading={deletingId === repository.id}>{'\u5220\u9664'}</Button>
-                </Popconfirm>
-              </div>)}
-            </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={'\u6682\u65e0\u5df2\u914d\u7f6e\u6570\u636e\u6e90'} />}
-          </div>
+          {entityList('repository', '\u5df2\u914d\u7f6e\u7684\u6570\u636e\u6e90', '\u5220\u9664\u6570\u636e\u6e90\u4f1a\u6e05\u7406\u5f52\u56e0\u7edf\u8ba1\u548c\u540c\u6b65\u4efb\u52a1\uff0c\u4f46\u4f1a\u4fdd\u7559 Git mirror \u76ee\u5f55\u3002', repositories, repositoryDetail)}
         </> },
       ].filter((item) => canCreateDepartment || item.key !== 'department')} />
     </Drawer>
   </>;
 }
+
 function roleLabel(role: AuthUser['role']) {
   return role === 'SUPER_ADMIN' ? '\u6700\u9ad8\u6743\u9650' : role === 'DEPARTMENT_ADMIN' ? '\u90e8\u95e8\u6743\u9650' : '\u67e5\u770b\u6743\u9650';
 }
@@ -916,32 +971,37 @@ function DashboardPage({ session, onLogout }: { session: AuthSession; onLogout: 
 
           {activeSection === 'repositories' && <>
             <Card className="workspace-card workspace-scope-card" title={<><span className="panel-title-icon"><ApartmentOutlined /></span>{'\u540c\u6b65\u8303\u56f4'}</>} extra={<Text type="secondary">{'\u90e8\u95e8 \u2192 \u9879\u76ee \u2192 \u4ed3\u5e93\u5206\u7ec4 \u2192 \u4ed3\u5e93'}</Text>}>
-              <div className="scope-quick-select scope-quick-select--primary">
-                <div className="scope-quick-select__copy"><Text strong>{'\u9009\u62e9\u7ec4\u7ec7\u8303\u56f4'}</Text><Text type="secondary">{'\u53ef\u9009\u62e9\u90e8\u95e8\u3001\u9879\u76ee\u3001\u4ed3\u5e93\u5206\u7ec4\u6216\u5355\u4e2a\u4ed3\u5e93'}</Text></div>
-                <TreeSelect
-                  allowClear
-                  showSearch
-                  treeDefaultExpandAll
-                  treeNodeFilterProp="title"
-                  value={selectedTreeKey}
-                  treeData={toScopeTreeData(hierarchy)}
-                  placeholder={'\u8bf7\u9009\u62e9\u90e8\u95e8 / \u9879\u76ee / \u4ed3\u5e93\u5206\u7ec4 / \u4ed3\u5e93'}
-                  onChange={(value) => {
-                    if (!value) { resetScope(); return; }
-                    selectHierarchyNode([String(value)]);
-                  }}
-                  style={{ minWidth: 360, flex: 1 }}
-                />
-                <Button className="scope-reset-button" onClick={resetScope} disabled={!hasScopeChanges}>{'\u91cd\u7f6e\u8303\u56f4'}</Button>
+              <div className="sync-scope-layout">
+                <div className="sync-scope-step">
+                  <div className="sync-scope-step__title"><span>1</span><div><Text strong>{'\u9009\u62e9\u8981\u540c\u6b65\u7684\u8303\u56f4'}</Text><Text type="secondary">{'\u53ef\u4ee5\u9009\u90e8\u95e8\u3001\u9879\u76ee\u3001\u4ed3\u5e93\u5206\u7ec4\u6216\u5355\u4e2a\u4ed3\u5e93'}</Text></div></div>
+                  <TreeSelect
+                    allowClear
+                    showSearch
+                    treeDefaultExpandAll
+                    treeNodeFilterProp="title"
+                    value={selectedTreeKey}
+                    treeData={toScopeTreeData(hierarchy)}
+                    placeholder={'\u4f8b\u5982\uff1a\u9009\u62e9\u67d0\u4e2a\u9879\u76ee\u4ee5\u540c\u6b65\u5176\u4e0b\u6240\u6709\u4ed3\u5e93'}
+                    onChange={(value) => {
+                      if (!value) { resetScope(); return; }
+                      selectHierarchyNode([String(value)]);
+                    }}
+                  />
+                </div>
+                <div className="sync-scope-summary">
+                  <div className="sync-scope-step__title"><span>2</span><div><Text strong>{'\u786e\u8ba4\u5c06\u8981\u6267\u884c\u7684\u8303\u56f4'}</Text><Text type="secondary">{repositoryId ? '\u672c\u6b21\u53ea\u4f1a\u540c\u6b65\u8be5\u4ed3\u5e93' : '\u672c\u6b21\u4f1a\u540c\u6b65\u6b64\u8303\u56f4\u5185\u7684\u5168\u90e8\u4ed3\u5e93'}</Text></div></div>
+                  <Tag color="purple" className="sync-scope-summary__tag">{scopePath}</Tag>
+                  <Button className="scope-reset-button" onClick={resetScope} disabled={!hasScopeChanges}>{'\u91cd\u7f6e\u4e3a\u9ed8\u8ba4\u8303\u56f4'}</Button>
+                </div>
               </div>
-              <div className="scope-context workspace-scope"><Text type="secondary">{'\u5f53\u524d\u8303\u56f4\uff1a'}</Text><Tag color="purple">{scopePath}</Tag><Text type="secondary">{'\u9009\u62e9\u4e0a\u7ea7\u8282\u70b9\u4f1a\u5305\u542b\u5176\u4e0b\u5168\u90e8\u4ed3\u5e93\uff0c\u9009\u62e9\u5355\u4e2a\u4ed3\u5e93\u53ea\u4f1a\u64cd\u4f5c\u8be5\u4ed3\u5e93\u3002'}</Text></div>
             </Card>
             <Row gutter={[16, 16]} className="workspace-row">
               <Col xs={24}>
-                <Card className="workspace-card" title={<><span className="panel-title-icon"><CloudSyncOutlined /></span>{'\u4ed3\u5e93\u540c\u6b65'}</>} extra={<Space wrap size={8}><Tag>{`${dashboard?.repositories.length ?? 0} \u4e2a\u4ed3\u5e93`}</Tag><Button icon={<UnorderedListOutlined />} onClick={() => setJobsOpen(true)}>{'\u540c\u6b65\u4efb\u52a1'}</Button>{isSuperAdmin && <Button icon={<SettingOutlined />} onClick={() => setScheduleOpen(true)}>{'\u81ea\u52a8\u540c\u6b65'}{syncScheduleQuery.data?.enabled ? ` / ${syncScheduleQuery.data.intervalMinutes} \u5206\u949f` : ''}</Button>}{canManage && <Button type="primary" icon={<SyncOutlined />} loading={syncMutation.isPending} onClick={() => syncMutation.mutate()}>{repositoryId ? '\u540c\u6b65\u5f53\u524d\u4ed3\u5e93' : '\u540c\u6b65\u5f53\u524d\u8303\u56f4'}</Button>}</Space>}>
-                  <Alert className="sync-job-alert" type={activeJobs.length ? 'info' : 'success'} showIcon title={activeJobs.length ? `\u5f53\u524d\u6709 ${activeJobs.length} \u4e2a\u540c\u6b65\u4efb\u52a1\u6b63\u5728\u5904\u7406` : '\u5f53\u524d\u6ca1\u6709\u6b63\u5728\u5904\u7406\u7684\u540c\u6b65\u4efb\u52a1'} description={repositoryId ? `\u5f53\u524d\u9009\u62e9\u7684\u662f\u5355\u4e2a\u4ed3\u5e93\uff1a${scopePath}` : `\u540c\u6b65\u6309\u94ae\u5c06\u5904\u7406\u201c${scopePath}\u201d\u8303\u56f4\u5185\u7684\u5168\u90e8\u4ed3\u5e93`} />
-                  <div className="scope-context workspace-scope"><Text type="secondary">{'\u4ed3\u5e93\u5217\u8868\u8303\u56f4\uff1a'}</Text><b>{scopePath}</b></div>
-                  <Table className="repository-table" columns={repositoryColumns} dataSource={dashboard?.repositories ?? []} rowKey="repositoryId" size="middle" loading={dashboardQuery.isLoading} pagination={{ pageSize: 10, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 900 }} locale={{ emptyText: '\u5f53\u524d\u8303\u56f4\u6ca1\u6709\u5df2\u914d\u7f6e\u7684\u4ed3\u5e93' }} />
+                <Card className="workspace-card" title={<><span className="panel-title-icon"><CloudSyncOutlined /></span>{'\u4ed3\u5e93\u540c\u6b65'}</>} extra={<Space wrap size={8}><Tag>{`${dashboard?.repositories.length ?? 0} \u4e2a\u4ed3\u5e93`}</Tag><Button icon={<UnorderedListOutlined />} onClick={() => setJobsOpen(true)}>{'\u67e5\u770b\u540c\u6b65\u4efb\u52a1'}</Button>{isSuperAdmin && <Button icon={<SettingOutlined />} onClick={() => setScheduleOpen(true)}>{'\u81ea\u52a8\u540c\u6b65'}{syncScheduleQuery.data?.enabled ? ` / ${syncScheduleQuery.data.intervalMinutes} \u5206\u949f` : ''}</Button>}{canManage && <Button type="primary" icon={<SyncOutlined />} loading={syncMutation.isPending} onClick={() => syncMutation.mutate()}>{repositoryId ? '\u5f00\u59cb\u540c\u6b65\u8be5\u4ed3\u5e93' : '\u5f00\u59cb\u540c\u6b65\u5df2\u9009\u8303\u56f4'}</Button>}</Space>}>
+                  <Alert className="sync-job-alert" type={activeJobs.length ? 'info' : 'success'} showIcon
+                    title={repositoryId ? `\u5df2\u9009\u62e9\u4ed3\u5e93\uff1a${scopePath}` : `\u5df2\u9009\u62e9\u540c\u6b65\u8303\u56f4\uff1a${scopePath}`}
+                    description={activeJobs.length ? `\u5f53\u524d\u6709 ${activeJobs.length} \u4e2a\u4ed3\u5e93\u540c\u6b65\u4efb\u52a1\u6b63\u5728\u5904\u7406\uff0c\u53ef\u4ee5\u5728\u201c\u67e5\u770b\u540c\u6b65\u4efb\u52a1\u201d\u4e2d\u67e5\u770b\u8fdb\u5ea6\u3002` : (repositoryId ? '\u70b9\u51fb\u201c\u5f00\u59cb\u540c\u6b65\u8be5\u4ed3\u5e93\u201d\u540e\uff0c\u53ea\u4f1a\u4e3a\u8be5\u4ed3\u5e93\u521b\u5efa\u4efb\u52a1\u3002' : '\u70b9\u51fb\u201c\u5f00\u59cb\u540c\u6b65\u5df2\u9009\u8303\u56f4\u201d\u540e\uff0c\u7cfb\u7edf\u4ec5\u4f1a\u4e3a\u6b64\u8303\u56f4\u5185\u7684\u4ed3\u5e93\u521b\u5efa\u540c\u6b65\u4efb\u52a1\u3002')} />
+                  <Table className="repository-table" columns={repositoryColumns} dataSource={dashboard?.repositories ?? []} rowKey="repositoryId" size="middle" loading={dashboardQuery.isLoading} pagination={{ pageSize: 10, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 900 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={'\u5f53\u524d\u8303\u56f4\u6682\u65e0\u5df2\u914d\u7f6e\u4ed3\u5e93\uff0c\u8bf7\u5148\u524d\u5f80\u201c\u7ec4\u7ec7\u4e0e\u6570\u636e\u6e90\u201d\u65b0\u589e\u6570\u636e\u6e90\u3002'} /> }} />
                 </Card>
               </Col>
             </Row>
@@ -957,7 +1017,7 @@ function DashboardPage({ session, onLogout }: { session: AuthSession; onLogout: 
             <Col xs={24} xl={12}>
                <Card className="workspace-card" title={<><span className="panel-title-icon"><SettingOutlined /></span>{'\u6570\u636e\u6e90\u7ef4\u62a4'}</>}>
                   <Alert type="info" showIcon title={'\u6309\u7ec4\u7ec7\u5c42\u7ea7\u7ef4\u62a4\u6570\u636e\u6e90'} description={'\u5148\u5efa\u7acb\u90e8\u95e8\u548c\u9879\u76ee\uff0c\u518d\u6309\u9700\u8981\u521b\u5efa\u4ed3\u5e93\u5206\u7ec4\u548c\u4ed3\u5e93\u3002\u4ed3\u5e93\u4fdd\u5b58\u540e\uff0c\u53ef\u5728\u201c\u4ed3\u5e93\u4e0e\u540c\u6b65\u201d\u4e2d\u53d1\u8d77\u521d\u59cb\u540c\u6b65\u3002'} />
-                  <div className="management-actions"><CatalogDrawer filters={filters} canCreateDepartment={isSuperAdmin} /><Button icon={<CloudSyncOutlined />} onClick={() => setActiveSection('repositories')}>{'\u524d\u5f80\u4ed3\u5e93\u4e0e\u540c\u6b65'}</Button></div>
+                  <div className="management-actions"><CatalogDrawer filters={filters} canCreateDepartment={isSuperAdmin} onHierarchyChanged={resetScope} /><Button icon={<CloudSyncOutlined />} onClick={() => setActiveSection('repositories')}>{'\u524d\u5f80\u4ed3\u5e93\u4e0e\u540c\u6b65'}</Button></div>
                   <div className="management-guide"><b>{'\u5f53\u524d\u6743\u9650\uff1a'}{roleLabel(session.user.role)}</b><Text type="secondary">{'\u90e8\u95e8\u7ba1\u7406\u5458\u53ea\u80fd\u5728\u6388\u6743\u90e8\u95e8\u8303\u56f4\u5185\u7ef4\u62a4\u9879\u76ee\u3001\u5206\u7ec4\u548c\u4ed3\u5e93\uff1b\u6700\u9ad8\u6743\u9650\u53ef\u521b\u5efa\u90e8\u95e8\u3002'}</Text></div>
               </Card>
             </Col>
@@ -987,11 +1047,6 @@ export default function App() {
   }, []);
   function loggedIn(next: AuthSession) { setSession(next); }
   function loggedOut() { window.localStorage.removeItem(authStorageKey); setSession(null); }
-  return <ConfigProvider theme={{ token: { colorPrimary: palette.ai, borderRadius: 12, fontFamily: 'Inter, "Microsoft YaHei", sans-serif' } }}><AntApp>{session ? <DashboardPage session={session} onLogout={loggedOut} /> : <LoginPage onLoggedIn={loggedIn} />}</AntApp></ConfigProvider>;
+  return <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: palette.ai, borderRadius: 12, fontFamily: 'Inter, "Microsoft YaHei", sans-serif' } }}><AntApp>{session ? <DashboardPage session={session} onLogout={loggedOut} /> : <LoginPage onLoggedIn={loggedIn} />}</AntApp></ConfigProvider>;
 }
-
-
-
-
-
 

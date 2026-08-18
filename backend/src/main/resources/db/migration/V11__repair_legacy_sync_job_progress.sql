@@ -1,4 +1,4 @@
-﻿-- Repair jobs that were already terminal before V7 introduced durable phase and batch-progress fields.
+-- Repair jobs that were already terminal before V7 introduced durable phase and batch-progress fields.
 -- V7 gave those historical rows the column defaults (QUEUED / 0), which is misleading in the task list.
 UPDATE sync_jobs
 SET phase = CASE

@@ -1,4 +1,4 @@
-﻿CREATE TABLE sync_jobs (
+CREATE TABLE sync_jobs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     repository_id BIGINT NOT NULL,
     active_repository_id BIGINT NULL,

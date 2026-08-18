@@ -11,6 +11,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -65,7 +69,6 @@ class GitAiSyncServiceRemoteRepositoryTests {
         commit("two", "two.txt", "two\n");
         commit("three", "three.txt", "three\n");
         runGit(work, "push", "origin", "main");
-
         GitAiSyncService.SyncResult first = service.syncRepository(9001L);
         assertEquals("SUCCESS", first.status());
         assertEquals(2, first.commits());
@@ -100,6 +103,44 @@ class GitAiSyncServiceRemoteRepositoryTests {
     }
 
     @Test
+    void firstSyncOnlyImportsTheMonthBeforeConfigurationAndThenUsesIncrementalCommits() throws Exception {
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        commitAt(now.minusDays(40), "outside-window", "old.txt", "old\n");
+        commitAt(now.minusDays(20), "inside-one", "one.txt", "one\n");
+        commitAt(now.minusDays(10), "inside-two", "two.txt", "two\n");
+        commitAt(now.minusDays(2), "inside-three", "three.txt", "three\n");
+        runGit(work, "push", "origin", "main");
+        jdbc.update("update repositories set sync_configured_at = ?, sync_window_initialized = false where id = 9001",
+                java.sql.Timestamp.from(now.minusDays(60).toInstant()));
+        java.time.LocalDateTime beforeSync = java.time.LocalDateTime.now().minusMinutes(1);
+
+        GitAiSyncService.SyncResult first = service.syncRepository(9001L);
+        assertEquals("SUCCESS", first.status());
+        assertEquals(2, first.commits());
+        assertFalse(first.historyComplete());
+        assertEquals(2, count("select count(*) from commit_attribution_stats where repository_id = 9001"));
+        assertEquals(0, count("select count(*) from commit_attribution_stats where repository_id = 9001 and commit_subject = 'outside-window'"));
+        assertTrue(jdbc.queryForObject("select sync_window_initialized from repositories where id = 9001", Boolean.class));
+        assertTrue(jdbc.queryForObject("select sync_configured_at from repositories where id = 9001", java.time.LocalDateTime.class).isAfter(beforeSync));
+
+        GitAiSyncService.SyncResult second = service.syncRepository(9001L);
+        assertEquals("SUCCESS", second.status());
+        assertEquals(1, second.commits());
+        assertTrue(second.historyComplete());
+        assertEquals(3, count("select count(*) from commit_attribution_stats where repository_id = 9001"));
+        assertEquals(0, count("select count(*) from commit_attribution_stats where repository_id = 9001 and commit_subject = 'outside-window'"));
+
+        commitAt(now.plusMinutes(1), "after-window", "four.txt", "four\n");
+        runGit(work, "push", "origin", "main");
+        GitAiSyncService.SyncResult third = service.syncRepository(9001L);
+        assertEquals("SUCCESS", third.status());
+        assertEquals(1, third.commits());
+        assertTrue(third.historyComplete());
+        assertEquals(4, count("select count(*) from commit_attribution_stats where repository_id = 9001"));
+        assertEquals(0, count("select count(*) from commit_attribution_stats where repository_id = 9001 and commit_subject = 'outside-window'"));
+    }
+
+    @Test
     void failedCloneIsReportedAndPartialMirrorIsRemoved() {
         String missingRemote = tempDir.resolve("does-not-exist.git").toUri().toString();
         jdbc.update("update repositories set git_url = ? where id = 9001", missingRemote);
@@ -131,6 +172,14 @@ class GitAiSyncServiceRemoteRepositoryTests {
         runGit(work, "commit", "-m", message);
     }
 
+    private void commitAt(OffsetDateTime timestamp, String message, String file, String contents) throws Exception {
+        Files.writeString(work.resolve(file), contents, StandardCharsets.UTF_8);
+        runGit(work, "add", file);
+        String gitTimestamp = timestamp.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        runGitWithEnvironment(work, Map.of("GIT_AUTHOR_DATE", gitTimestamp, "GIT_COMMITTER_DATE", gitTimestamp),
+                "commit", "--date", gitTimestamp, "-m", message);
+    }
+
     private int count(String sql) {
         return jdbc.queryForObject(sql, Integer.class);
     }
@@ -140,6 +189,10 @@ class GitAiSyncServiceRemoteRepositoryTests {
     }
 
     private static String runGit(Path directory, String... args) throws Exception {
+        return runGitWithEnvironment(directory, Map.of(), args);
+    }
+
+    private static String runGitWithEnvironment(Path directory, Map<String, String> environment, String... args) throws Exception {
         var command = new java.util.ArrayList<String>();
         command.add("git");
         if (directory != null) {
@@ -147,7 +200,9 @@ class GitAiSyncServiceRemoteRepositoryTests {
             command.add(directory.toAbsolutePath().toString());
         }
         command.addAll(java.util.List.of(args));
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
+        builder.environment().putAll(environment);
+        Process process = builder.start();
         String output;
         try (var input = process.getInputStream()) {
             output = new String(input.readAllBytes(), StandardCharsets.UTF_8);

@@ -185,6 +185,67 @@ class AuthAndAuthorizationTests {
     }
 
     @Test
+    void deletingSameNamedRepositoriesUsesIdAndKeepsTheOtherDepartmentRepository() throws Exception {
+        String superAdmin = token("superadmin");
+        jdbc.update("insert into departments (id, name, description) values (93, 'same-name-department-a', 'delete regression')");
+        jdbc.update("insert into departments (id, name, description) values (94, 'same-name-department-b', 'delete regression')");
+        jdbc.update("insert into projects (id, department_id, name, description) values (9301, 93, 'same-name-project', 'delete regression')");
+        jdbc.update("insert into projects (id, department_id, name, description) values (9401, 94, 'same-name-project', 'delete regression')");
+        jdbc.update("""
+                insert into repositories (id, project_id, group_id, name, git_url, default_branch)
+                values (9301, 9301, null, 'same-name-repository', 'file:///tmp/same-name-repository-a.git', 'main')
+                """);
+        jdbc.update("""
+                insert into repositories (id, project_id, group_id, name, git_url, default_branch)
+                values (9401, 9401, null, 'same-name-repository', 'file:///tmp/same-name-repository-b.git', 'main')
+                """);
+
+        mockMvc.perform(delete("/api/catalog/repositories/9301").header("Authorization", superAdmin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(9301));
+
+        org.junit.jupiter.api.Assertions.assertEquals(0, countById("repositories", 9301));
+        org.junit.jupiter.api.Assertions.assertEquals(1, countById("repositories", 9401));
+
+        mockMvc.perform(delete("/api/catalog/repositories/9401").header("Authorization", superAdmin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(9401));
+    }
+
+    @Test
+    void higherLevelCatalogItemsCanBeDeletedAfterTheirChildrenAreRemoved() throws Exception {
+        String superAdmin = token("superadmin");
+        jdbc.update("insert into departments (id, name, description) values (92, 'delete-department', 'delete regression')");
+        jdbc.update("insert into projects (id, department_id, name, description) values (92, 92, 'delete-project', 'delete regression')");
+        jdbc.update("insert into repository_groups (id, project_id, name) values (92, 92, 'delete-group')");
+        jdbc.update("""
+                insert into repositories (id, project_id, group_id, name, git_url, default_branch)
+                values (92, 92, 92, 'delete-child-repository', 'file:///tmp/delete-child-repository.git', 'main')
+                """);
+
+        mockMvc.perform(delete("/api/catalog/groups/92").header("Authorization", superAdmin))
+                .andExpect(status().isConflict());
+        mockMvc.perform(delete("/api/catalog/projects/92").header("Authorization", superAdmin))
+                .andExpect(status().isConflict());
+        mockMvc.perform(delete("/api/catalog/departments/92").header("Authorization", superAdmin))
+                .andExpect(status().isConflict());
+
+        mockMvc.perform(delete("/api/catalog/repositories/92").header("Authorization", superAdmin))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/api/catalog/groups/92").header("Authorization", superAdmin))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/api/catalog/projects/92").header("Authorization", superAdmin))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/api/catalog/departments/92").header("Authorization", superAdmin))
+                .andExpect(status().isOk());
+
+        org.junit.jupiter.api.Assertions.assertEquals(0, countById("departments", 92));
+        org.junit.jupiter.api.Assertions.assertEquals(0, countById("projects", 92));
+        org.junit.jupiter.api.Assertions.assertEquals(0, countById("repository_groups", 92));
+        org.junit.jupiter.api.Assertions.assertEquals(0, countById("repositories", 92));
+    }
+
+    @Test
     void deletingRepositoryWithActiveSyncJobIsRejected() throws Exception {
         String superAdmin = token("superadmin");
         jdbc.update("insert into projects (id, department_id, name, description) values (91, 1, 'active-delete-project', 'delete regression')");
@@ -218,6 +279,10 @@ class AuthAndAuthorizationTests {
         return jdbc.queryForObject("select count(*) from " + table + " where " + (table.equals("repositories") ? "id" : "repository_id") + " = ?", Integer.class, repositoryId);
     }
 
+    private int countById(String table, long id) {
+        return jdbc.queryForObject("select count(*) from " + table + " where id = ?", Integer.class, id);
+    }
+
     private void createOtherDepartmentRepository() {
         jdbc.update("insert into departments (id, name, description) values (2, 'Other department', 'Authorization test scope')");
         jdbc.update("insert into projects (id, department_id, name, description) values (2, 2, 'Other project', 'Authorization test scope')");
@@ -237,4 +302,3 @@ class AuthAndAuthorizationTests {
         return "Bearer " + body.substring(start, end);
     }
 }
-
