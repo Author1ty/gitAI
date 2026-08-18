@@ -1,0 +1,21 @@
+backend/src/main/java/com/gitai/dashboard/auth/AuthService.java
+  s_cc673be9de5d84::t_7c78a22fd0a548 17-18,30,33-34,38,47-58,67-70,73-75,77-95,143-144,146
+backend/src/test/java/com/gitai/dashboard/api/AuthAndAuthorizationTests.java
+  s_cc673be9de5d84::t_31a4ce70734f32 11-13,199-216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "0b5158f1752bc91ae376c95d88e8a3ed296e25b1",
+  "prompts": {},
+  "sessions": {
+    "s_cc673be9de5d84": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00411-a56d-7f20-83d0-257c1c1c48ec",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "git-ai-dashboard <git-ai-dashboard@localhost>"
+    }
+  }
+}
