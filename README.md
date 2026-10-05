@@ -103,10 +103,41 @@ GET  /api/sync-jobs?activeOnly=false&limit=30
 GET  /api/sync-jobs/{jobId}
 POST /api/sync-jobs/{jobId}/cancel       # 仅能取消 QUEUED 任务，不强杀正在运行的 Git 进程
 
+GET  /api/catalog/repositories        # 当前用户可见的仓库配置
 POST /api/catalog/departments
 POST /api/catalog/projects
 POST /api/catalog/groups
 POST /api/catalog/repositories
+```
+
+`GET /api/catalog/repositories` 返回当前登录用户有权访问的全部仓库配置。最高权限和查看权限返回全量数据，部门权限仅返回所属部门的数据；接口不会接受客户端传入的部门范围，因此不能通过参数越权读取其他部门。响应为数组，包含组织归属、Git 连接配置、同步窗口和最近同步状态，例如：
+
+```json
+[
+  {
+    "id": 1,
+    "departmentId": 1,
+    "departmentName": "研发效能部",
+    "projectId": 1,
+    "projectName": "Git AI 归因看板",
+    "groupId": 1,
+    "groupName": "本地验证仓库",
+    "name": "git-ai-attribution-sample",
+    "gitUrl": "D:/code/skill/git-ai/test-repos/git-ai-attribution-sample-remote.git",
+    "defaultBranch": "main",
+    "mirrorPath": "D:/code/skill/git-ai/test-repos/git-ai-attribution-sample-mirror.git",
+    "syncConfiguredAt": "2026-08-20T10:00:00",
+    "syncWindowInitialized": true,
+    "lastSyncedAt": null,
+    "lastSyncStatus": "NOT_SYNCED",
+    "lastSyncError": null,
+    "historyBaseSha": null,
+    "historySinceSha": null,
+    "historyOffset": 0,
+    "historyComplete": false,
+    "syncedHeadSha": null
+  }
+]
 ```
 
 `POST /api/catalog/repositories` 示例：

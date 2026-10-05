@@ -12,6 +12,7 @@ import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,6 +21,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Timestamp;
+import java.util.List;
 import java.time.LocalDateTime;
 
 /** Catalog configuration endpoints. Write access is enforced on the server, not only by the UI. */
@@ -60,6 +64,31 @@ public class CatalogController {
         long id = insert("insert into repository_groups (project_id, name) values (?, ?)", request.projectId(), request.name().trim());
         audit.record(access.currentUser(), "CATALOG_GROUP_CREATED", "repository_group", id, request.name().trim());
         return new Created(id);
+    }
+
+    /**
+     * SR963134: list the repository configurations visible to the current user.
+     * The department scope is enforced server-side so this endpoint cannot disclose another department's repositories.
+     */
+    @GetMapping("/repositories")
+    public List<RepositoryConfiguration> listRepositories() {
+        Long departmentScope = access.allowedDepartmentId();
+        String scope = departmentScope == null ? "" : " where p.department_id = ?";
+        String sql = """
+                select r.id, r.project_id, p.name project_name, p.department_id, d.name department_name,
+                       r.group_id, g.name group_name, r.name repository_name, r.git_url, r.default_branch,
+                       r.mirror_path, r.sync_configured_at, r.sync_window_initialized, r.last_synced_at,
+                       r.last_sync_status, r.last_sync_error, r.history_base_sha, r.history_since_sha,
+                       r.history_offset, r.history_complete, r.synced_head_sha
+                from repositories r
+                join projects p on p.id = r.project_id
+                join departments d on d.id = p.department_id
+                left join repository_groups g on g.id = r.group_id
+                """ + scope + " order by d.name, p.name, coalesce(g.name, ''), r.name, r.id";
+        if (departmentScope == null) {
+            return jdbc.query(sql, this::repositoryConfiguration);
+        }
+        return jdbc.query(sql, this::repositoryConfiguration, departmentScope);
     }
 
     @PostMapping("/repositories")
@@ -206,7 +235,44 @@ public class CatalogController {
         return key.longValue();
     }
 
+    private RepositoryConfiguration repositoryConfiguration(ResultSet rs, int row) throws java.sql.SQLException {
+        long groupIdValue = rs.getLong("group_id");
+        Long groupId = rs.wasNull() ? null : groupIdValue;
+        return new RepositoryConfiguration(
+                rs.getLong("id"),
+                rs.getLong("department_id"),
+                rs.getString("department_name"),
+                rs.getLong("project_id"),
+                rs.getString("project_name"),
+                groupId,
+                rs.getString("group_name"),
+                rs.getString("repository_name"),
+                rs.getString("git_url"),
+                rs.getString("default_branch"),
+                rs.getString("mirror_path"),
+                timestamp(rs.getTimestamp("sync_configured_at")),
+                rs.getBoolean("sync_window_initialized"),
+                timestamp(rs.getTimestamp("last_synced_at")),
+                rs.getString("last_sync_status"),
+                rs.getString("last_sync_error"),
+                rs.getString("history_base_sha"),
+                rs.getString("history_since_sha"),
+                rs.getLong("history_offset"),
+                rs.getBoolean("history_complete"),
+                rs.getString("synced_head_sha"));
+    }
+
+    private String timestamp(Timestamp value) { return value == null ? null : value.toLocalDateTime().toString(); }
+
     private String blankToNull(String value) { return value == null || value.isBlank() ? null : value.trim(); }
+
+    public record RepositoryConfiguration(long id, long departmentId, String departmentName, long projectId,
+                                          String projectName, Long groupId, String groupName, String name,
+                                          String gitUrl, String defaultBranch, String mirrorPath,
+                                          String syncConfiguredAt, boolean syncWindowInitialized,
+                                          String lastSyncedAt, String lastSyncStatus, String lastSyncError,
+                                          String historyBaseSha, String historySinceSha, long historyOffset,
+                                          boolean historyComplete, String syncedHeadSha) {}
 
     public record Created(long id) {}
     public record Deleted(long id) {}

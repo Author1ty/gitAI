@@ -39,6 +39,8 @@ class AuthAndAuthorizationTests {
                 .andExpect(status().isForbidden());
         mockMvc.perform(get("/api/hierarchy"))
                 .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/catalog/repositories"))
+                .andExpect(status().isForbidden());
         mockMvc.perform(get("/api/health"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ok"));
@@ -52,6 +54,11 @@ class AuthAndAuthorizationTests {
                 .andExpect(status().isOk());
         mockMvc.perform(get("/api/sync-jobs").header("Authorization", viewer))
                 .andExpect(status().isOk());
+        mockMvc.perform(get("/api/catalog/repositories").header("Authorization", viewer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == 1)].name").value(org.hamcrest.Matchers.hasItem("git-ai-attribution-sample")))
+                .andExpect(jsonPath("$[?(@.id == 1)].gitUrl").isNotEmpty())
+                .andExpect(jsonPath("$[?(@.id == 1)].defaultBranch").value(org.hamcrest.Matchers.hasItem("main")));
 
         mockMvc.perform(post("/api/sync-jobs").header("Authorization", viewer)
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
@@ -82,6 +89,10 @@ class AuthAndAuthorizationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].id").value(1));
+        mockMvc.perform(get("/api/catalog/repositories").header("Authorization", departmentAdmin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == 2)]").isEmpty())
+                .andExpect(jsonPath("$[*].departmentId").value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(1))));
         mockMvc.perform(get("/api/dashboard").header("Authorization", departmentAdmin).param("repositoryId", "2"))
                 .andExpect(status().isForbidden());
         mockMvc.perform(post("/api/repositories/2/sync-jobs").header("Authorization", departmentAdmin))
