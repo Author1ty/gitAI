@@ -1,0 +1,25 @@
+README.md
+  s_96ceb475b9cf11::t_a8848e8b59a5b3 106,113-142
+backend/src/test/java/com/gitai/dashboard/api/AuthAndAuthorizationTests.java
+  s_96ceb475b9cf11::t_61432fe140b240 42-43,57-58,92-93
+  s_96ceb475b9cf11::t_4d0458c84674ab 59-61,94-95
+backend/src/main/java/com/gitai/dashboard/api/CatalogController.java
+  s_96ceb475b9cf11::t_15dfa26e2a4e0a 239-240,247
+  s_96ceb475b9cf11::t_b0ad01733da2ea 15,24-26,69-93,238,241-246,248-266,269-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f3a9420805f6c9ea3f19940ad9077e7d2ea751e5",
+  "prompts": {},
+  "sessions": {
+    "s_96ceb475b9cf11": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a10cd7-b12f-7ae2-9674-31a836ff4313",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "git-ai-dashboard <git-ai-dashboard@localhost>"
+    }
+  }
+}
